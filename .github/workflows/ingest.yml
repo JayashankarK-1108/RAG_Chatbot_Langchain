@@ -35,4 +35,4 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
         run: |
-          python kb_ingestion/main.py
+          python -m kb_ingestion.main
