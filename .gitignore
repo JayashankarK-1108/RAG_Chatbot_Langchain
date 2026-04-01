@@ -1,0 +1,24 @@
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Temporary files
+tmp_images/
+*.tmp
+
+# IDE
+.vscode/
+.idea/
