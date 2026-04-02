@@ -6,6 +6,11 @@ from kb_chatbot.session_store import get_session_memory
 
 app = FastAPI(title="Knowledge Base Chatbot")
 
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 retriever = get_retriever()
 rag_chain = build_rag_chain(get_session_memory)
 
