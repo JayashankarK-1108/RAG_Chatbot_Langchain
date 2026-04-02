@@ -1,9 +1,6 @@
 import boto3
 import os
 
-# Pre-signed URL expiry (seconds) — default 1 hour
-PRESIGNED_URL_EXPIRY = int(os.getenv("S3_PRESIGNED_URL_EXPIRY", "3600"))
-
 
 def upload_images(image_paths, prefix):
     s3 = boto3.client(
@@ -18,11 +15,6 @@ def upload_images(image_paths, prefix):
     for image in image_paths:
         key = f"{prefix}/{os.path.basename(image)}"
         s3.upload_file(image, bucket, key, ExtraArgs={"ContentType": "image/png"})
-        url = s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": key},
-            ExpiresIn=PRESIGNED_URL_EXPIRY,
-        )
-        urls.append(url)
+        urls.append(f"s3://{bucket}/{key}")
 
     return urls

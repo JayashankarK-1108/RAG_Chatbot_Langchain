@@ -1,8 +1,12 @@
 import uuid
+import os
+import boto3
+from urllib.parse import urlparse
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from kb_chatbot.retriever import get_retriever
+from kb_chatbot.retriever import get_vectorstore
 from kb_chatbot.rag_chain import build_rag_chain
 from kb_chatbot.session_store import (
     get_session_memory,
@@ -14,13 +18,45 @@ from kb_chatbot.session_store import (
 
 app = FastAPI(title="Knowledge Base Chatbot")
 
-retriever = get_retriever()
+vectorstore = get_vectorstore()
 rag_chain = build_rag_chain(get_session_memory)
+
+SCORE_THRESHOLD = 0.75
+
+
+def _s3_key_from_url(stored_url: str) -> str:
+    """Extract S3 object key from a stored s3:// or https:// URL."""
+    parsed = urlparse(stored_url)
+    if parsed.scheme == "s3":
+        return parsed.path.lstrip("/")
+    # https://bucket.s3.amazonaws.com/key?...
+    return parsed.path.lstrip("/")
+
+
+def _fresh_presigned_url(key: str) -> str:
+    s3 = boto3.client(
+        "s3",
+        region_name=os.getenv("AWS_REGION"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    )
+    return s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": os.getenv("S3_BUCKET_NAME"), "Key": key},
+        ExpiresIn=3600,
+    )
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/image-proxy")
+def image_proxy(key: str):
+    """Generate a fresh presigned URL and redirect to it."""
+    url = _fresh_presigned_url(key)
+    return RedirectResponse(url)
 
 
 class Query(BaseModel):
@@ -32,15 +68,30 @@ class Query(BaseModel):
 def chat(query: Query):
     session_id = query.session_id or str(uuid.uuid4())
 
-    source_docs = retriever.invoke(query.question)
+    # Score-filtered retrieval — suppresses images for irrelevant queries like "hi"
+    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=5)
+    source_docs = [doc for doc, score in results if score >= SCORE_THRESHOLD]
+
     context = "\n\n".join(doc.page_content for doc in source_docs)
 
-    image_urls = []
+    # Collect unique stored URLs → proxy URLs with stable keys
+    seen_keys = []
     for doc in source_docs:
-        image_urls.extend(doc.metadata.get("image_urls", []))
+        for stored_url in doc.metadata.get("image_urls", []):
+            key = _s3_key_from_url(stored_url)
+            if key and key not in seen_keys:
+                seen_keys.append(key)
+
+    # Build image reference list for the prompt (e.g. "[IMAGE_1]", "[IMAGE_2]")
+    image_refs = "\n".join(f"[IMAGE_{i+1}]" for i in range(len(seen_keys)))
+    if not image_refs:
+        image_refs = "No images available."
+
+    # Proxy URLs returned to the frontend — always fresh
+    proxy_urls = [f"/image-proxy?key={key}" for key in seen_keys]
 
     result = rag_chain.invoke(
-        {"question": query.question, "context": context},
+        {"question": query.question, "context": context, "image_refs": image_refs},
         config={"configurable": {"session_id": session_id}},
     )
 
@@ -49,7 +100,7 @@ def chat(query: Query):
     return {
         "session_id": session_id,
         "answer": result,
-        "images": list(set(image_urls)),
+        "images": proxy_urls,
     }
 
 

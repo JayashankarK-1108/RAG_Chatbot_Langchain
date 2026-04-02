@@ -1,7 +1,7 @@
 from langchain_core.prompts import PromptTemplate
 
 RAG_PROMPT = PromptTemplate(
-    input_variables=["context", "question"],
+    input_variables=["context", "question", "image_refs"],
     template="""
 You are a helpful assistant that answers questions using the provided context.
 
@@ -13,7 +13,12 @@ Guidelines:
    "The provided context does not contain enough information to answer this question."
 5. Keep answers concise, clear, and conversational.
 6. Add small touches of warmth and friendliness to make the response engaging.
-7. If screenshots are available, mention that they are provided below.
+7. When explaining steps, place the matching image marker on a new line immediately after each step.
+   Use the image markers exactly as listed below — do not invent new ones.
+   Only include a marker if it is relevant to that step.
+
+Available image markers (use these inline after the relevant step):
+{image_refs}
 
 Context:
 {context}

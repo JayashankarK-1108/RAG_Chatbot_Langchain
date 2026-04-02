@@ -146,18 +146,10 @@ function appendMessage(role, content, images = []) {
   const avatarLabel = isHuman ? "U" : "AI";
   const avatarClass = isHuman ? "human-avatar" : "ai-avatar";
 
-  let imagesHtml = "";
-  if (images.length) {
-    const imgs = images.map(
-      (url) => `<img src="${escapeHtml(url)}" alt="reference image" onclick="openLightbox('${escapeHtml(url)}')" />`
-    ).join("");
-    imagesHtml = `<div class="image-section"><span class="image-label">Reference Screenshots</span><div class="image-grid">${imgs}</div></div>`;
-  }
-
   row.innerHTML = `
     <div class="message-wrapper">
       <div class="avatar ${avatarClass}">${avatarLabel}</div>
-      <div class="bubble">${formatContent(content)}${imagesHtml}</div>
+      <div class="bubble">${formatContent(content, images)}</div>
     </div>
   `;
 
@@ -239,7 +231,15 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-function formatContent(text) {
+function formatContent(text, images = []) {
+  // Replace [IMAGE_N] markers with actual inline images
+  text = text.replace(/\[IMAGE_(\d+)\]/g, (_, n) => {
+    const url = images[parseInt(n) - 1];
+    if (!url) return "";
+    return `<div class="inline-image-wrap">
+      <img src="${escapeHtml(url)}" alt="Step screenshot" class="inline-img" onclick="openLightbox('${escapeHtml(url)}')" />
+    </div>`;
+  });
   // Bold: **text**
   text = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
   // Italic: *text*
