@@ -151,7 +151,7 @@ function appendMessage(role, content, images = []) {
     const imgs = images.map(
       (url) => `<img src="${escapeHtml(url)}" alt="reference image" onclick="openLightbox('${escapeHtml(url)}')" />`
     ).join("");
-    imagesHtml = `<div class="image-grid">${imgs}</div>`;
+    imagesHtml = `<div class="image-section"><span class="image-label">Reference Screenshots</span><div class="image-grid">${imgs}</div></div>`;
   }
 
   row.innerHTML = `

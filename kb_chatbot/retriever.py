@@ -13,4 +13,7 @@ def get_retriever():
         embeddings
     )
 
-    return vectorstore.as_retriever(search_kwargs={"k": 5})
+    return vectorstore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={"k": 5, "score_threshold": 0.75},
+    )
