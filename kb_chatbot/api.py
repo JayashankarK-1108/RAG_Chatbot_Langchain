@@ -21,7 +21,7 @@ app = FastAPI(title="Knowledge Base Chatbot")
 vectorstore = get_vectorstore()
 rag_chain = build_rag_chain(get_session_memory)
 
-SCORE_THRESHOLD = 0.75
+SCORE_THRESHOLD = 0.60
 
 
 def _s3_key_from_url(stored_url: str) -> str:
@@ -69,8 +69,12 @@ def chat(query: Query):
     session_id = query.session_id or str(uuid.uuid4())
 
     # Score-filtered retrieval — suppresses images for irrelevant queries like "hi"
-    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=5)
+    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=8)
     source_docs = [doc for doc, score in results if score >= SCORE_THRESHOLD]
+
+    # Fallback: if nothing clears the threshold, use top-3 results anyway
+    if not source_docs:
+        source_docs = [doc for doc, _ in results[:3]]
 
     context = "\n\n".join(doc.page_content for doc in source_docs)
 
