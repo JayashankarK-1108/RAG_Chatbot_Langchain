@@ -14,7 +14,7 @@ def create_chunks(documents, image_urls, source):
                 "text": text,
                 "metadata": {
                     "source": source,
-                    "page": doc.metadata.get("page"),
+                    "page": doc.metadata.get("page", 0),
                     "image_urls": image_urls
                 }
             })
