@@ -1,11 +1,46 @@
 let currentSessionId = null;
+let currentMessages = []; // tracks messages for the active session
+
+const STORAGE_KEY = "rag_sessions";
+
+// ── LocalStorage helpers ──────────────────────────────────────────────
+function storageAll() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+  catch { return {}; }
+}
+
+function storageSave() {
+  if (!currentSessionId) return;
+  const all = storageAll();
+  const existing = all[currentSessionId] || {};
+  all[currentSessionId] = {
+    title: existing.title || "New Chat",
+    messages: currentMessages,
+    ts: Date.now(),
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+}
+
+function storageSetTitle(sessionId, title) {
+  const all = storageAll();
+  all[sessionId] = {
+    ...(all[sessionId] || { messages: [] }),
+    title: title.slice(0, 60),
+    ts: Date.now(),
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+}
+
+function storageDelete(sessionId) {
+  const all = storageAll();
+  delete all[sessionId];
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+}
 
 // ── Init ──────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
-  loadSessions();
+  renderSessionListFromStorage();
   document.getElementById("newChatBtn").addEventListener("click", startNewChat);
-
-  // Lightbox close
   document.getElementById("lightbox").addEventListener("click", (e) => {
     if (e.target === e.currentTarget || e.target.classList.contains("lightbox-close")) {
       closeLightbox();
@@ -14,14 +49,12 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ── Session management ────────────────────────────────────────────────
-async function loadSessions() {
-  try {
-    const res = await fetch("/sessions");
-    const sessions = await res.json();
-    renderSessionList(sessions);
-  } catch {
-    // server may not be ready yet
-  }
+function renderSessionListFromStorage() {
+  const all = storageAll();
+  const sessions = Object.entries(all)
+    .map(([id, data]) => ({ session_id: id, title: data.title || "New Chat", last_active: data.ts || 0 }))
+    .sort((a, b) => b.last_active - a.last_active);
+  renderSessionList(sessions);
 }
 
 function renderSessionList(sessions) {
@@ -33,49 +66,50 @@ function renderSessionList(sessions) {
     return;
   }
 
-  sessions
-    .sort((a, b) => b.last_active - a.last_active)
-    .forEach((s) => {
-      const li = document.createElement("li");
-      li.className = "session-item" + (s.session_id === currentSessionId ? " active" : "");
-      li.dataset.id = s.session_id;
-      li.innerHTML = `
-        <span class="session-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</span>
-        <button class="delete-btn" title="Delete chat" onclick="deleteSession(event, '${s.session_id}')">✕</button>
-      `;
-      li.addEventListener("click", () => loadSession(s.session_id));
-      list.appendChild(li);
-    });
+  sessions.forEach((s) => {
+    const li = document.createElement("li");
+    li.className = "session-item" + (s.session_id === currentSessionId ? " active" : "");
+    li.dataset.id = s.session_id;
+    li.innerHTML = `
+      <span class="session-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</span>
+      <button class="delete-btn" title="Delete chat" onclick="deleteSession(event, '${s.session_id}')">✕</button>
+    `;
+    li.addEventListener("click", () => loadSession(s.session_id));
+    list.appendChild(li);
+  });
 }
 
-async function loadSession(sessionId) {
+function loadSession(sessionId) {
   currentSessionId = sessionId;
-  highlightActiveSession();
+  const all = storageAll();
+  const session = all[sessionId];
+  currentMessages = session?.messages || [];
+
   clearMessages();
 
-  try {
-    const res = await fetch(`/sessions/${sessionId}/history`);
-    const data = await res.json();
-    data.messages.forEach((m) => appendMessage(m.role === "human" ? "human" : "ai", m.content));
+  if (currentMessages.length === 0) {
+    document.getElementById("welcomeMsg").style.display = "flex";
+  } else {
+    document.getElementById("welcomeMsg").style.display = "none";
+    currentMessages.forEach((m) => appendMessage(m.role, m.content, m.images || []));
     scrollToBottom();
-  } catch {
-    appendMessage("ai", "Could not load chat history.");
   }
+
+  highlightActiveSession();
 }
 
-async function deleteSession(event, sessionId) {
+function deleteSession(event, sessionId) {
   event.stopPropagation();
-  await fetch(`/sessions/${sessionId}`, { method: "DELETE" });
-  if (currentSessionId === sessionId) {
-    startNewChat();
-  }
-  loadSessions();
+  storageDelete(sessionId);
+  fetch(`/sessions/${sessionId}`, { method: "DELETE" });
+  if (currentSessionId === sessionId) startNewChat();
+  else renderSessionListFromStorage();
 }
 
 function startNewChat() {
   currentSessionId = null;
+  currentMessages = [];
   clearMessages();
-  document.getElementById("welcomeMsg").style.display = "flex";
   highlightActiveSession();
 }
 
@@ -91,7 +125,6 @@ async function sendMessage() {
   const question = input.value.trim();
   if (!question) return;
 
-  // Hide welcome, show user message
   document.getElementById("welcomeMsg").style.display = "none";
   input.value = "";
   autoResize(input);
@@ -113,11 +146,18 @@ async function sendMessage() {
 
     if (!currentSessionId) {
       currentSessionId = data.session_id;
-      await loadSessions();
-      highlightActiveSession();
+      storageSetTitle(currentSessionId, question);
     }
 
     appendMessage("ai", data.answer, data.images || []);
+
+    // Persist both messages to localStorage
+    currentMessages.push({ role: "human", content: question, images: [] });
+    currentMessages.push({ role: "ai", content: data.answer, images: data.images || [] });
+    storageSave();
+
+    renderSessionListFromStorage();
+    highlightActiveSession();
     scrollToBottom();
   } catch (err) {
     removeTyping(typingId);
