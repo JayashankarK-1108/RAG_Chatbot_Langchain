@@ -78,9 +78,18 @@ def chat(query: Query):
 
     context = "\n\n".join(doc.page_content for doc in source_docs)
 
-    # Collect unique stored URLs → proxy URLs with stable keys
-    seen_keys = []
+    # Find the dominant source document (most chunks retrieved from it)
+    source_counter: dict = {}
     for doc in source_docs:
+        src = doc.metadata.get("source", "")
+        source_counter[src] = source_counter.get(src, 0) + 1
+    dominant_source = max(source_counter, key=source_counter.get) if source_counter else None
+
+    # Collect images only from the dominant source — prevents cross-doc image bleed
+    seen_keys: list = []
+    for doc in source_docs:
+        if doc.metadata.get("source") != dominant_source:
+            continue
         for stored_url in doc.metadata.get("image_urls", []):
             key = _s3_key_from_url(stored_url)
             if key and key not in seen_keys:
