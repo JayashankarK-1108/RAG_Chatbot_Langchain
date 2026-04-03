@@ -78,9 +78,14 @@ def chat(query: Query):
 
     context = "\n\n".join(doc.page_content for doc in source_docs)
 
-    # Collect unique stored URLs → proxy URLs with stable keys
-    seen_keys = []
+    # Use the source of the single highest-scoring chunk — most relevant document wins
+    top_source = results[0][0].metadata.get("source", "") if results else None
+
+    # Collect images only from the top source — prevents cross-doc image bleed
+    seen_keys: list = []
     for doc in source_docs:
+        if doc.metadata.get("source") != top_source:
+            continue
         for stored_url in doc.metadata.get("image_urls", []):
             key = _s3_key_from_url(stored_url)
             if key and key not in seen_keys:

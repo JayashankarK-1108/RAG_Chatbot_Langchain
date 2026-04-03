@@ -19,12 +19,23 @@ def extract_images(file_path):
 
     elif file_path.endswith(".docx"):
         doc = Document(file_path)
-        for rel in doc.part.rels.values():
-            if "image" in rel.target_ref:
-                name = os.path.basename(rel.target_ref)
-                path = f"{TMP_DIR}/{name}"
-                with open(path, "wb") as f:
-                    f.write(rel.target_part.blob)
-                images.append(path)
+        # Walk body XML in visual order to get images in document sequence
+        R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+        seen = set()
+        for elem in doc.element.body.iter():
+            if not elem.tag.endswith("}blip"):
+                continue
+            rId = elem.get(R_EMBED)
+            if not rId or rId in seen or rId not in doc.part.rels:
+                continue
+            seen.add(rId)
+            rel = doc.part.rels[rId]
+            if "image" not in rel.target_ref:
+                continue
+            name = os.path.basename(rel.target_ref)
+            path = f"{TMP_DIR}/{name}"
+            with open(path, "wb") as f:
+                f.write(rel.target_part.blob)
+            images.append(path)
 
     return images
