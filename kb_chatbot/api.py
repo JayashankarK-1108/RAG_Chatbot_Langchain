@@ -1,5 +1,6 @@
 import uuid
 import os
+import re
 import boto3
 from urllib.parse import urlparse
 from fastapi import FastAPI
@@ -45,6 +46,30 @@ def _fresh_presigned_url(key: str) -> str:
         Params={"Bucket": os.getenv("S3_BUCKET_NAME"), "Key": key},
         ExpiresIn=3600,
     )
+
+
+def _inject_image_markers(text: str, num_images: int) -> str:
+    """
+    Post-processing fallback for PDF mode: if the LLM didn't place [IMAGE_N] markers
+    after each numbered step, inject them automatically.
+    Splits on double-newlines; any block that starts with a digit step (1. / 2) / etc.)
+    gets a marker appended after it, cycling through the available image count.
+    """
+    if num_images == 0 or "[IMAGE_" in text:
+        return text  # markers already present or no images — nothing to do
+
+    parts = re.split(r"(\n\n)", text)
+    out = []
+    img_idx = 1
+
+    for part in parts:
+        out.append(part)
+        if part.strip() and re.match(r"^\d+[.)]\s", part.strip()):
+            n = ((img_idx - 1) % num_images) + 1
+            out.append(f"\n[IMAGE_{n}]")
+            img_idx += 1
+
+    return "".join(out)
 
 
 @app.get("/health")
@@ -137,6 +162,10 @@ def chat(query: Query):
         {"question": query.question, "context": context, "image_refs": image_refs},
         config={"configurable": {"session_id": session_id}},
     )
+
+    # For PDF mode: if the LLM forgot to place markers, inject them after each numbered step
+    if not uses_positioned_images and seen_keys:
+        result = _inject_image_markers(result, len(seen_keys))
 
     set_session_title(session_id, query.question)
 

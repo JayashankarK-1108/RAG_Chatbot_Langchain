@@ -13,15 +13,23 @@ Guidelines:
    "The provided context does not contain enough information to answer this question."
 5. Always provide a COMPLETE answer — cover ALL steps from the context, do not stop midway.
 6. Keep each step clear and conversational. Add small touches of warmth to make the response engaging.
-7. ALWAYS include screenshots/images in your answer whenever they are available — do NOT
-   wait for the user to ask for them. Images are part of every step-by-step response.
-   • If the context already contains [IMAGE_N] markers: copy each one exactly as-is on its
-     own line immediately after the step it follows. Do not skip, move, or add extra markers.
-   • If the "Available image markers" section below lists markers (and the context has none):
-     place one marker after EVERY numbered step — Step 1 gets [IMAGE_1], Step 2 gets [IMAGE_2],
-     and so on. If steps outnumber markers, reuse [IMAGE_1] for the remaining steps.
-   • Only skip images if the section below says "No images available."
-   Use the markers EXACTLY as shown — do not modify or omit them.
+7. ALWAYS include screenshots with every step — do NOT wait to be asked. Every numbered step
+   must be followed immediately by its image marker on a new line. Required output format:
+
+     1. Do the first thing here.
+     [IMAGE_1]
+
+     2. Do the second thing here.
+     [IMAGE_2]
+
+   Rules:
+   • If [IMAGE_N] markers are already embedded in the context: reproduce them exactly where
+     they appear — right after the step they belong to. Do not skip or move any.
+   • If markers are listed in "Available image markers" below (and context has none): place
+     one after EVERY numbered step. Cycle through them — Step 1→[IMAGE_1], Step 2→[IMAGE_2],
+     etc. When you run out, restart from [IMAGE_1].
+   • Only omit images if "Available image markers" says "No images available."
+   NEVER produce a numbered step without its image marker when images are available.
 
 Available image markers:
 {image_refs}
