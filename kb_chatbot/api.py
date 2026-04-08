@@ -93,16 +93,24 @@ class Query(BaseModel):
 def chat(query: Query):
     session_id = query.session_id or str(uuid.uuid4())
 
-    # Score-filtered retrieval — suppresses images for irrelevant queries like "hi"
-    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=8)
-    source_docs = [doc for doc, score in results if score >= SCORE_THRESHOLD]
+    # Retrieve a wide pool of candidates so long step-by-step docs aren't truncated
+    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=20)
 
-    # Fallback: if nothing clears the threshold, use top-3 results anyway
+    # Identify the most relevant document from the top result
+    top_source = results[0][0].metadata.get("source", "") if results else None
+
+    # For the top source: include ALL its chunks (no threshold) so no step is skipped.
+    # For other sources: apply the score threshold to avoid unrelated noise.
+    top_source_all = [doc for doc, _ in results if doc.metadata.get("source") == top_source]
+    other_filtered = [
+        doc for doc, score in results
+        if doc.metadata.get("source") != top_source and score >= SCORE_THRESHOLD
+    ]
+    source_docs = top_source_all + other_filtered
+
+    # Fallback: if the top source itself had no hits (shouldn't happen), use raw top-3
     if not source_docs:
         source_docs = [doc for doc, _ in results[:3]]
-
-    # Use the source of the single highest-scoring chunk — most relevant document wins
-    top_source = results[0][0].metadata.get("source", "") if results else None
 
     top_source_docs = [doc for doc in source_docs if doc.metadata.get("source") == top_source]
     other_docs = [doc for doc in source_docs if doc.metadata.get("source") != top_source]
