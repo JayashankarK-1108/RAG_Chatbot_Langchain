@@ -59,6 +59,7 @@ def extract_docx_segments(file_path):
     segments = []
     all_images = []
     current_text_parts = []
+    current_images = []  # all images accumulated since the last text block
 
     for child in doc.element.body:
         # Extract text from this top-level body element (paragraph or table)
@@ -87,18 +88,22 @@ def extract_docx_segments(file_path):
             break  # one image per body element
 
         if para_text:
+            # New text after accumulated images means the previous step is complete — finalize it
+            if current_images and current_text_parts:
+                text = "\n".join(current_text_parts).strip()
+                segments.append({"text": text, "images": list(current_images)})
+                current_text_parts = []
+                current_images = []
             current_text_parts.append(para_text)
 
         if image_path:
-            # Finalize the current text block: this image belongs to the preceding text
-            text = "\n".join(current_text_parts).strip()
-            segments.append({"text": text, "image": image_path})
-            current_text_parts = []
+            # Just accumulate; don't finalize yet — more images may follow the same step
+            current_images.append(image_path)
 
-    # Any remaining text with no following image
+    # Finalize whatever remains at end of document
     if current_text_parts:
         text = "\n".join(current_text_parts).strip()
         if text:
-            segments.append({"text": text, "image": None})
+            segments.append({"text": text, "images": list(current_images)})
 
     return segments, all_images

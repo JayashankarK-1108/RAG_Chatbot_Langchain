@@ -24,10 +24,10 @@ def create_chunks(documents, image_urls, source):
 
 def create_chunks_from_segments(segments, path_to_url, source):
     """
-    Create chunks from DOCX segments where each segment's image is associated
+    Create chunks from DOCX segments where each segment's images are associated
     only with the chunks derived from that segment's text.
 
-    segments   – list of {"text": str, "image": str | None}
+    segments   – list of {"text": str, "images": list[str]}
     path_to_url – dict mapping local image path -> S3 URL
     source     – filename used as the source metadata field
     """
@@ -42,9 +42,12 @@ def create_chunks_from_segments(segments, path_to_url, source):
         if not text.strip():
             continue
 
-        local_img = segment.get("image")
-        image_url = path_to_url.get(local_img) if local_img else None
-        chunk_image_urls = [image_url] if image_url else []
+        # Resolve all image URLs for this segment (supports 0, 1, or multiple images per step)
+        chunk_image_urls = [
+            path_to_url[img]
+            for img in segment.get("images", [])
+            if img in path_to_url
+        ]
 
         for chunk_text in splitter.split_text(text):
             chunks.append({

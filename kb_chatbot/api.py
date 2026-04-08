@@ -97,14 +97,20 @@ def chat(query: Query):
         for doc in top_source_docs:
             chunk_text = doc.page_content
             chunk_image_urls = doc.metadata.get("image_urls", [])
-            if chunk_image_urls:
-                key = _s3_key_from_url(chunk_image_urls[0])
+
+            # Collect markers for every image belonging to this step (may be 2+)
+            step_markers = []
+            for url in chunk_image_urls:
+                key = _s3_key_from_url(url)
                 if key and key not in seen_keys:
                     seen_keys.append(key)
                     img_counter += 1
-                    context_parts.append(f"{chunk_text}\n[IMAGE_{img_counter}]")
-                    continue
-            context_parts.append(chunk_text)
+                    step_markers.append(f"[IMAGE_{img_counter}]")
+
+            if step_markers:
+                context_parts.append(chunk_text + "\n" + "\n".join(step_markers))
+            else:
+                context_parts.append(chunk_text)
 
         for doc in other_docs:
             context_parts.append(doc.page_content)
