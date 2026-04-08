@@ -76,25 +76,53 @@ def chat(query: Query):
     if not source_docs:
         source_docs = [doc for doc, _ in results[:3]]
 
-    context = "\n\n".join(doc.page_content for doc in source_docs)
-
     # Use the source of the single highest-scoring chunk — most relevant document wins
     top_source = results[0][0].metadata.get("source", "") if results else None
 
-    # Collect images only from the top source — prevents cross-doc image bleed
-    seen_keys: list = []
-    for doc in source_docs:
-        if doc.metadata.get("source") != top_source:
-            continue
-        for stored_url in doc.metadata.get("image_urls", []):
-            key = _s3_key_from_url(stored_url)
-            if key and key not in seen_keys:
-                seen_keys.append(key)
+    top_source_docs = [doc for doc in source_docs if doc.metadata.get("source") == top_source]
+    other_docs = [doc for doc in source_docs if doc.metadata.get("source") != top_source]
 
-    # Build image reference list for the prompt (e.g. "[IMAGE_1]", "[IMAGE_2]")
-    image_refs = "\n".join(f"[IMAGE_{i+1}]" for i in range(len(seen_keys)))
-    if not image_refs:
-        image_refs = "No images available."
+    # Detect whether the top source was ingested with per-step image positioning (DOCX)
+    uses_positioned_images = any(
+        doc.metadata.get("image_order") == "positioned" for doc in top_source_docs
+    )
+
+    seen_keys: list = []
+
+    if uses_positioned_images:
+        # DOCX: embed [IMAGE_N] markers directly after each chunk that has an associated image.
+        # The LLM sees the correct position and simply preserves the markers.
+        context_parts = []
+        img_counter = 0
+        for doc in top_source_docs:
+            chunk_text = doc.page_content
+            chunk_image_urls = doc.metadata.get("image_urls", [])
+            if chunk_image_urls:
+                key = _s3_key_from_url(chunk_image_urls[0])
+                if key and key not in seen_keys:
+                    seen_keys.append(key)
+                    img_counter += 1
+                    context_parts.append(f"{chunk_text}\n[IMAGE_{img_counter}]")
+                    continue
+            context_parts.append(chunk_text)
+
+        for doc in other_docs:
+            context_parts.append(doc.page_content)
+
+        context = "\n\n".join(context_parts)
+        image_refs = "Images are embedded in the context above."
+    else:
+        # PDF / other: existing bulk approach — collect all images from top source
+        context = "\n\n".join(doc.page_content for doc in source_docs)
+        for doc in top_source_docs:
+            for stored_url in doc.metadata.get("image_urls", []):
+                key = _s3_key_from_url(stored_url)
+                if key and key not in seen_keys:
+                    seen_keys.append(key)
+
+        image_refs = "\n".join(f"[IMAGE_{i+1}]" for i in range(len(seen_keys)))
+        if not image_refs:
+            image_refs = "No images available."
 
     # Proxy URLs returned to the frontend — always fresh
     proxy_urls = [f"/image-proxy?key={key}" for key in seen_keys]

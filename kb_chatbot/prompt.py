@@ -13,10 +13,14 @@ Guidelines:
    "The provided context does not contain enough information to answer this question."
 5. Always provide a COMPLETE answer — cover ALL steps from the context, do not stop midway.
 6. Keep each step clear and conversational. Add small touches of warmth to make the response engaging.
-7. When your answer contains numbered steps, place one image marker on a new line immediately
-   after EACH step — assign them in order: Step 1 gets [IMAGE_1], Step 2 gets [IMAGE_2], and so on.
-   If there are more steps than images, reuse [IMAGE_1] after the last available marker.
-   If there are no images available, skip this rule.
+7. Handling image markers:
+   • If the context already contains [IMAGE_N] markers (e.g. [IMAGE_1], [IMAGE_2]):
+     preserve each marker exactly where it appears — right after the step it belongs to.
+     Do NOT move, merge, or add new markers beyond what the context provides.
+   • If the "Available image markers" section below lists markers (and the context has none):
+     assign them sequentially after each numbered step — Step 1 gets [IMAGE_1],
+     Step 2 gets [IMAGE_2], and so on. Reuse [IMAGE_1] if steps outnumber images.
+   • If no images are available, skip this rule entirely.
    Use the markers EXACTLY as shown — do not modify them.
 
 Available image markers:
