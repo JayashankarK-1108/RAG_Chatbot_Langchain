@@ -1,6 +1,7 @@
 import uuid
 import os
 import re
+import pathlib
 import boto3
 from urllib.parse import urlparse
 from fastapi import FastAPI
@@ -23,6 +24,10 @@ vectorstore = get_vectorstore()
 rag_chain = build_rag_chain(get_session_memory)
 
 SCORE_THRESHOLD = 0.60
+OUT_OF_CONTEXT_THRESHOLD = 0.45
+
+DOCS_DIR = pathlib.Path("data/documents")
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
 
 
 def _s3_key_from_url(stored_url: str) -> str:
@@ -77,6 +82,24 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/library")
+def get_library():
+    """Return a list of available document titles in the knowledge base."""
+    if not DOCS_DIR.exists():
+        return {"documents": []}
+
+    docs = []
+    for f in sorted(DOCS_DIR.iterdir()):
+        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
+            # Strip all known extensions (handles double extensions like .pdf.pdf)
+            name = f.name
+            name = re.sub(r"(\.\w+)+$", "", name)
+            name = name.replace("_", " ").replace("-", " ").strip()
+            docs.append({"filename": f.name, "title": name})
+
+    return {"documents": docs}
+
+
 @app.get("/image-proxy")
 def image_proxy(key: str):
     """Generate a fresh presigned URL and redirect to it."""
@@ -95,6 +118,17 @@ def chat(query: Query):
 
     # Retrieve a wide pool of candidates so long step-by-step docs aren't truncated
     results = vectorstore.similarity_search_with_relevance_scores(query.question, k=20)
+
+    # Out-of-context guard: if the best match score is too low, the question is unrelated
+    if not results or results[0][1] < OUT_OF_CONTEXT_THRESHOLD:
+        return {
+            "session_id": session_id,
+            "answer": (
+                "I'm sorry, but your question appears to be **outside the scope** of our knowledge base. "
+                "Please check the **Library** (bottom-left) for available documents and ask a question related to those topics."
+            ),
+            "images": [],
+        }
 
     # Identify the most relevant document from the top result
     top_source = results[0][0].metadata.get("source", "") if results else None
