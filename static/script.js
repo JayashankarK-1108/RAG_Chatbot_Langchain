@@ -1,5 +1,6 @@
 let currentSessionId = null;
 let currentMessages = []; // tracks messages for the active session
+let lastQuestion = ""; // tracks last user question for KB Request pre-fill
 
 const STORAGE_KEY = "rag_sessions";
 
@@ -129,6 +130,7 @@ async function sendMessage() {
   const input = document.getElementById("userInput");
   const question = input.value.trim();
   if (!question) return;
+  lastQuestion = question;
 
   document.getElementById("welcomeMsg").style.display = "none";
   input.value = "";
@@ -325,6 +327,60 @@ function closeLibrary() {
 
 function handleLibraryOverlayClick(e) {
   if (e.target === e.currentTarget) closeLibrary();
+}
+
+// ── KB Request ────────────────────────────────────────────────────────
+function openKBRequest() {
+  document.getElementById("kbreqTopic").value = lastQuestion;
+  document.getElementById("kbreqComment").value = "";
+  document.getElementById("kbreqStatus").textContent = "";
+  document.getElementById("kbreqStatus").className = "";
+  document.getElementById("kbreqSubmitBtn").disabled = false;
+  document.getElementById("kbRequestModal").classList.add("open");
+  document.getElementById("kbRequestBtn").classList.add("active");
+  document.getElementById("kbreqTopic").focus();
+}
+
+function closeKBRequest() {
+  document.getElementById("kbRequestModal").classList.remove("open");
+  document.getElementById("kbRequestBtn").classList.remove("active");
+}
+
+function handleKBRequestOverlayClick(e) {
+  if (e.target === e.currentTarget) closeKBRequest();
+}
+
+async function submitKBRequest() {
+  const topic = document.getElementById("kbreqTopic").value.trim();
+  const comment = document.getElementById("kbreqComment").value.trim();
+  const status = document.getElementById("kbreqStatus");
+  const btn = document.getElementById("kbreqSubmitBtn");
+
+  if (!comment) {
+    status.textContent = "Please enter your comments before submitting.";
+    status.className = "error";
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = "Submitting…";
+  status.className = "";
+
+  try {
+    const res = await fetch("/kb-request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: topic, comment }),
+    });
+    if (!res.ok) throw new Error("Server error");
+    status.textContent = "Request submitted successfully. Thank you!";
+    status.className = "success";
+    setTimeout(closeKBRequest, 1800);
+  } catch (err) {
+    status.textContent = "Failed to submit. Please try again.";
+    status.className = "error";
+    btn.disabled = false;
+  }
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────

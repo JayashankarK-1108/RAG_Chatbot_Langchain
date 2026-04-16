@@ -1,7 +1,9 @@
 import uuid
 import os
 import re
+import json
 import pathlib
+from datetime import datetime, timezone
 import boto3
 from urllib.parse import urlparse
 from fastapi import FastAPI
@@ -28,6 +30,7 @@ OUT_OF_CONTEXT_THRESHOLD = 0.45
 
 DOCS_DIR = pathlib.Path("data/documents")
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
+KB_REQUESTS_FILE = pathlib.Path("data/kb_requests.json")
 
 
 def _s3_key_from_url(stored_url: str) -> str:
@@ -216,6 +219,31 @@ def chat(query: Query):
         "answer": result,
         "images": proxy_urls,
     }
+
+
+class KBRequestBody(BaseModel):
+    question: str = ""
+    comment: str
+
+
+@app.post("/kb-request")
+def submit_kb_request(body: KBRequestBody):
+    entry = {
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "question": body.question,
+        "comment": body.comment,
+    }
+    existing = []
+    if KB_REQUESTS_FILE.exists():
+        try:
+            existing = json.loads(KB_REQUESTS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            existing = []
+    existing.append(entry)
+    KB_REQUESTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    KB_REQUESTS_FILE.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"status": "submitted", "id": entry["id"]}
 
 
 @app.get("/sessions")
