@@ -41,7 +41,6 @@ function storageDelete(sessionId) {
 document.addEventListener("DOMContentLoaded", () => {
   renderSessionListFromStorage();
   document.getElementById("newChatBtn").addEventListener("click", startNewChat);
-  document.getElementById("libraryBtn").addEventListener("click", openLibrary);
   document.getElementById("lightbox").addEventListener("click", (e) => {
     if (e.target === e.currentTarget || e.target.classList.contains("lightbox-close")) {
       closeLightbox();
@@ -313,7 +312,8 @@ async function openLibrary() {
       `;
       list.appendChild(li);
     });
-  } catch {
+  } catch (err) {
+    console.error("Library fetch error:", err);
     list.innerHTML = '<li class="library-loading">Failed to load documents.</li>';
   }
 }
