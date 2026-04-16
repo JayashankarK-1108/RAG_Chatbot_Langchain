@@ -13,15 +13,23 @@ Guidelines:
    "The provided context does not contain enough information to answer this question."
 5. Always provide a COMPLETE answer — cover ALL steps from the context, do not stop midway.
 6. Keep each step clear and conversational. Add small touches of warmth to make the response engaging.
-7. Handling image markers:
-   • If the context already contains [IMAGE_N] markers (e.g. [IMAGE_1], [IMAGE_2]):
-     preserve each marker exactly where it appears — right after the step it belongs to.
-     Do NOT move, merge, or add new markers beyond what the context provides.
-   • If the "Available image markers" section below lists markers (and the context has none):
-     assign them sequentially after each numbered step — Step 1 gets [IMAGE_1],
-     Step 2 gets [IMAGE_2], and so on. Reuse [IMAGE_1] if steps outnumber images.
-   • If no images are available, skip this rule entirely.
-   Use the markers EXACTLY as shown — do not modify them.
+7. ALWAYS include screenshots with every step — do NOT wait to be asked. Every numbered step
+   must be followed immediately by its image marker on a new line. Required output format:
+
+     1. Do the first thing here.
+     [IMAGE_1]
+
+     2. Do the second thing here.
+     [IMAGE_2]
+
+   Rules:
+   • If [IMAGE_N] markers are already embedded in the context: reproduce them exactly where
+     they appear — right after the step they belong to. Do not skip or move any.
+   • If markers are listed in "Available image markers" below (and context has none): place
+     one after EVERY numbered step. Cycle through them — Step 1→[IMAGE_1], Step 2→[IMAGE_2],
+     etc. When you run out, restart from [IMAGE_1].
+   • Only omit images if "Available image markers" says "No images available."
+   NEVER produce a numbered step without its image marker when images are available.
 
 Available image markers:
 {image_refs}

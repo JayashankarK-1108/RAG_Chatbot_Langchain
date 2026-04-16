@@ -1,5 +1,6 @@
 import uuid
 import os
+import re
 import boto3
 from urllib.parse import urlparse
 from fastapi import FastAPI
@@ -47,6 +48,30 @@ def _fresh_presigned_url(key: str) -> str:
     )
 
 
+def _inject_image_markers(text: str, num_images: int) -> str:
+    """
+    Post-processing fallback for PDF mode: if the LLM didn't place [IMAGE_N] markers
+    after each numbered step, inject them automatically.
+    Splits on double-newlines; any block that starts with a digit step (1. / 2) / etc.)
+    gets a marker appended after it, cycling through the available image count.
+    """
+    if num_images == 0 or "[IMAGE_" in text:
+        return text  # markers already present or no images — nothing to do
+
+    parts = re.split(r"(\n\n)", text)
+    out = []
+    img_idx = 1
+
+    for part in parts:
+        out.append(part)
+        if part.strip() and re.match(r"^\d+[.)]\s", part.strip()):
+            n = ((img_idx - 1) % num_images) + 1
+            out.append(f"\n[IMAGE_{n}]")
+            img_idx += 1
+
+    return "".join(out)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -68,16 +93,24 @@ class Query(BaseModel):
 def chat(query: Query):
     session_id = query.session_id or str(uuid.uuid4())
 
-    # Score-filtered retrieval — suppresses images for irrelevant queries like "hi"
-    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=8)
-    source_docs = [doc for doc, score in results if score >= SCORE_THRESHOLD]
+    # Retrieve a wide pool of candidates so long step-by-step docs aren't truncated
+    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=20)
 
-    # Fallback: if nothing clears the threshold, use top-3 results anyway
+    # Identify the most relevant document from the top result
+    top_source = results[0][0].metadata.get("source", "") if results else None
+
+    # For the top source: include ALL its chunks (no threshold) so no step is skipped.
+    # For other sources: apply the score threshold to avoid unrelated noise.
+    top_source_all = [doc for doc, _ in results if doc.metadata.get("source") == top_source]
+    other_filtered = [
+        doc for doc, score in results
+        if doc.metadata.get("source") != top_source and score >= SCORE_THRESHOLD
+    ]
+    source_docs = top_source_all + other_filtered
+
+    # Fallback: if the top source itself had no hits (shouldn't happen), use raw top-3
     if not source_docs:
         source_docs = [doc for doc, _ in results[:3]]
-
-    # Use the source of the single highest-scoring chunk — most relevant document wins
-    top_source = results[0][0].metadata.get("source", "") if results else None
 
     top_source_docs = [doc for doc in source_docs if doc.metadata.get("source") == top_source]
     other_docs = [doc for doc in source_docs if doc.metadata.get("source") != top_source]
@@ -137,6 +170,10 @@ def chat(query: Query):
         {"question": query.question, "context": context, "image_refs": image_refs},
         config={"configurable": {"session_id": session_id}},
     )
+
+    # For PDF mode: if the LLM forgot to place markers, inject them after each numbered step
+    if not uses_positioned_images and seen_keys:
+        result = _inject_image_markers(result, len(seen_keys))
 
     set_session_title(session_id, query.question)
 

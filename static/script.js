@@ -87,6 +87,9 @@ function loadSession(sessionId) {
 
   clearMessages();
 
+  const title = session?.title || "New Chat";
+  document.getElementById("chatTitle").textContent = title;
+
   if (currentMessages.length === 0) {
     document.getElementById("welcomeMsg").style.display = "flex";
   } else {
@@ -110,6 +113,7 @@ function startNewChat() {
   currentSessionId = null;
   currentMessages = [];
   clearMessages();
+  document.getElementById("chatTitle").textContent = "New Chat";
   highlightActiveSession();
 }
 
@@ -183,12 +187,17 @@ function appendMessage(role, content, images = []) {
   row.className = `message-row ${role}`;
 
   const isHuman = role === "human";
-  const avatarLabel = isHuman ? "U" : "AI";
   const avatarClass = isHuman ? "human-avatar" : "ai-avatar";
+  const avatarContent = isHuman
+    ? "U"
+    : `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+        <polygon points="50,4 96,28 96,72 50,96 4,72 4,28" fill="#f97316"/>
+        <polygon points="50,20 82,37 82,63 50,80 18,63 18,37" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="5"/>
+       </svg>`;
 
   row.innerHTML = `
     <div class="message-wrapper">
-      <div class="avatar ${avatarClass}">${avatarLabel}</div>
+      <div class="avatar ${avatarClass}">${avatarContent}</div>
       <div class="bubble">${formatContent(content, images)}</div>
     </div>
   `;
@@ -205,7 +214,12 @@ function appendTyping() {
   row.id = id;
   row.innerHTML = `
     <div class="message-wrapper">
-      <div class="avatar ai-avatar">AI</div>
+      <div class="avatar ai-avatar">
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+          <polygon points="50,4 96,28 96,72 50,96 4,72 4,28" fill="#f97316"/>
+          <polygon points="50,20 82,37 82,63 50,80 18,63 18,37" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="5"/>
+        </svg>
+      </div>
       <div class="bubble">
         <div class="typing-indicator"><span></span><span></span><span></span></div>
       </div>
@@ -225,15 +239,27 @@ function clearMessages() {
   container.innerHTML = `
     <div class="welcome" id="welcomeMsg">
       <div class="welcome-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="36" height="36">
+          <polygon points="50,4 96,28 96,72 50,96 4,72 4,28" fill="#f97316"/>
+          <polygon points="50,20 82,37 82,63 50,80 18,63 18,37" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="4"/>
         </svg>
       </div>
       <h2>How can I help you today?</h2>
-      <p>Ask anything about the knowledge base documents.</p>
+      <p>Ask me anything about the knowledge base. I'll find the relevant steps and screenshots for you.</p>
+      <div class="suggestions">
+        <button class="suggestion-chip" onclick="useSuggestion('How do I configure WLAN?')">How do I configure WLAN?</button>
+        <button class="suggestion-chip" onclick="useSuggestion('Walk me through the proxy process')">Walk me through the proxy process</button>
+        <button class="suggestion-chip" onclick="useSuggestion('Show me the pivot process steps')">Show me the pivot process steps</button>
+      </div>
     </div>
   `;
+}
+
+function useSuggestion(text) {
+  const input = document.getElementById("userInput");
+  input.value = text;
+  autoResize(input);
+  sendMessage();
 }
 
 function scrollToBottom() {
