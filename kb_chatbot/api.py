@@ -28,9 +28,10 @@ rag_chain = build_rag_chain(get_session_memory)
 SCORE_THRESHOLD = 0.60
 OUT_OF_CONTEXT_THRESHOLD = 0.45
 
-DOCS_DIR = pathlib.Path("data/documents")
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+DOCS_DIR = _PROJECT_ROOT / "data" / "documents"
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
-KB_REQUESTS_FILE = pathlib.Path("data/kb_requests.json")
+KB_REQUESTS_FILE = _PROJECT_ROOT / "data" / "kb_requests.json"
 
 
 def _s3_key_from_url(stored_url: str) -> str:
