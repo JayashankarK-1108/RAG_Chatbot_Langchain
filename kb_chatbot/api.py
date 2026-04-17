@@ -31,7 +31,6 @@ OUT_OF_CONTEXT_THRESHOLD = 0.45
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DOCS_DIR = _PROJECT_ROOT / "data" / "documents"
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
-KB_REQUESTS_FILE = _PROJECT_ROOT / "data" / "kb_requests.json"
 
 
 def _s3_key_from_url(stored_url: str) -> str:
@@ -227,6 +226,18 @@ class KBRequestBody(BaseModel):
     comment: str
 
 
+def _s3_client():
+    return boto3.client(
+        "s3",
+        region_name=os.getenv("AWS_REGION"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    )
+
+
+KB_REQUESTS_S3_KEY = "kb_requests/kb_requests.json"
+
+
 @app.post("/kb-request")
 def submit_kb_request(body: KBRequestBody):
     entry = {
@@ -235,15 +246,30 @@ def submit_kb_request(body: KBRequestBody):
         "question": body.question,
         "comment": body.comment,
     }
+
+    s3 = _s3_client()
+    bucket = os.getenv("S3_BUCKET_NAME")
+
+    # Read existing requests from S3 (if any)
     existing = []
-    if KB_REQUESTS_FILE.exists():
-        try:
-            existing = json.loads(KB_REQUESTS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            existing = []
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=KB_REQUESTS_S3_KEY)
+        existing = json.loads(obj["Body"].read().decode("utf-8"))
+    except s3.exceptions.NoSuchKey:
+        existing = []
+    except Exception:
+        existing = []
+
     existing.append(entry)
-    KB_REQUESTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    KB_REQUESTS_FILE.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Write updated list back to S3
+    s3.put_object(
+        Bucket=bucket,
+        Key=KB_REQUESTS_S3_KEY,
+        Body=json.dumps(existing, indent=2, ensure_ascii=False).encode("utf-8"),
+        ContentType="application/json",
+    )
+
     return {"status": "submitted", "id": entry["id"]}
 
 
