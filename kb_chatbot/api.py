@@ -1,6 +1,9 @@
 import uuid
 import os
 import re
+import json
+import pathlib
+from datetime import datetime, timezone
 import boto3
 from urllib.parse import urlparse
 from fastapi import FastAPI
@@ -23,6 +26,11 @@ vectorstore = get_vectorstore()
 rag_chain = build_rag_chain(get_session_memory)
 
 SCORE_THRESHOLD = 0.60
+OUT_OF_CONTEXT_THRESHOLD = 0.45
+
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+DOCS_DIR = _PROJECT_ROOT / "data" / "documents"
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
 
 
 def _s3_key_from_url(stored_url: str) -> str:
@@ -77,6 +85,24 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/library")
+def get_library():
+    """Return a list of available document titles in the knowledge base."""
+    if not DOCS_DIR.exists():
+        return {"documents": []}
+
+    docs = []
+    for f in sorted(DOCS_DIR.iterdir()):
+        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
+            # Strip all known extensions (handles double extensions like .pdf.pdf)
+            name = f.name
+            name = re.sub(r"(\.\w+)+$", "", name)
+            name = name.replace("_", " ").replace("-", " ").strip()
+            docs.append({"filename": f.name, "title": name})
+
+    return {"documents": docs}
+
+
 @app.get("/image-proxy")
 def image_proxy(key: str):
     """Generate a fresh presigned URL and redirect to it."""
@@ -95,6 +121,17 @@ def chat(query: Query):
 
     # Retrieve a wide pool of candidates so long step-by-step docs aren't truncated
     results = vectorstore.similarity_search_with_relevance_scores(query.question, k=20)
+
+    # Out-of-context guard: if the best match score is too low, the question is unrelated
+    if not results or results[0][1] < OUT_OF_CONTEXT_THRESHOLD:
+        return {
+            "session_id": session_id,
+            "answer": (
+                "I'm sorry, but your question appears to be **outside the scope** of our knowledge base. "
+                "Please check the **Library** (bottom-left) for available documents and ask a question related to those topics."
+            ),
+            "images": [],
+        }
 
     # Identify the most relevant document from the top result
     top_source = results[0][0].metadata.get("source", "") if results else None
@@ -182,6 +219,58 @@ def chat(query: Query):
         "answer": result,
         "images": proxy_urls,
     }
+
+
+class KBRequestBody(BaseModel):
+    question: str = ""
+    comment: str
+
+
+def _s3_client():
+    return boto3.client(
+        "s3",
+        region_name=os.getenv("AWS_REGION"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    )
+
+
+KB_REQUESTS_S3_KEY = "kb_requests/kb_requests.json"
+
+
+@app.post("/kb-request")
+def submit_kb_request(body: KBRequestBody):
+    entry = {
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "question": body.question,
+        "comment": body.comment,
+    }
+
+    s3 = _s3_client()
+    bucket = os.getenv("S3_BUCKET_NAME")
+
+    # Read existing requests from S3 (if any)
+    existing = []
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=KB_REQUESTS_S3_KEY)
+        existing = json.loads(obj["Body"].read().decode("utf-8"))
+    except s3.exceptions.NoSuchKey:
+        existing = []
+    except Exception:
+        existing = []
+
+    existing.append(entry)
+
+    # Write updated list back to S3
+    s3.put_object(
+        Bucket=bucket,
+        Key=KB_REQUESTS_S3_KEY,
+        Body=json.dumps(existing, indent=2, ensure_ascii=False).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+    return {"status": "submitted", "id": entry["id"]}
 
 
 @app.get("/sessions")

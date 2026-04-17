@@ -1,5 +1,6 @@
 let currentSessionId = null;
 let currentMessages = []; // tracks messages for the active session
+let lastQuestion = ""; // tracks last user question for KB Request pre-fill
 
 const STORAGE_KEY = "rag_sessions";
 
@@ -41,6 +42,7 @@ function storageDelete(sessionId) {
 document.addEventListener("DOMContentLoaded", () => {
   renderSessionListFromStorage();
   document.getElementById("newChatBtn").addEventListener("click", startNewChat);
+  document.getElementById("libraryBtn").addEventListener("click", openLibrary);
   document.getElementById("lightbox").addEventListener("click", (e) => {
     if (e.target === e.currentTarget || e.target.classList.contains("lightbox-close")) {
       closeLightbox();
@@ -128,6 +130,7 @@ async function sendMessage() {
   const input = document.getElementById("userInput");
   const question = input.value.trim();
   if (!question) return;
+  lastQuestion = question;
 
   document.getElementById("welcomeMsg").style.display = "none";
   input.value = "";
@@ -275,6 +278,109 @@ function setInputDisabled(disabled) {
 function autoResize(el) {
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, 180) + "px";
+}
+
+// ── Library ───────────────────────────────────────────────────────────
+async function openLibrary() {
+  const modal = document.getElementById("libraryModal");
+  const list = document.getElementById("libraryDocList");
+  modal.classList.add("open");
+  document.getElementById("libraryBtn").classList.add("active");
+
+  list.innerHTML = '<li class="library-loading">Loading documents…</li>';
+
+  try {
+    const res = await fetch("/library");
+    const data = await res.json();
+    const docs = data.documents || [];
+
+    if (!docs.length) {
+      list.innerHTML = '<li class="library-loading">No documents found.</li>';
+      return;
+    }
+
+    list.innerHTML = "";
+    docs.forEach((doc) => {
+      const li = document.createElement("li");
+      li.className = "library-doc-item";
+      li.innerHTML = `
+        <div class="library-doc-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="#f97316" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          </svg>
+        </div>
+        <span class="library-doc-name">${escapeHtml(doc.title)}</span>
+      `;
+      list.appendChild(li);
+    });
+  } catch {
+    list.innerHTML = '<li class="library-loading">Failed to load documents.</li>';
+  }
+}
+
+function closeLibrary() {
+  document.getElementById("libraryModal").classList.remove("open");
+  document.getElementById("libraryBtn").classList.remove("active");
+}
+
+function handleLibraryOverlayClick(e) {
+  if (e.target === e.currentTarget) closeLibrary();
+}
+
+// ── KB Request ────────────────────────────────────────────────────────
+function openKBRequest() {
+  document.getElementById("kbreqTopic").value = lastQuestion;
+  document.getElementById("kbreqComment").value = "";
+  document.getElementById("kbreqStatus").textContent = "";
+  document.getElementById("kbreqStatus").className = "";
+  document.getElementById("kbreqSubmitBtn").disabled = false;
+  document.getElementById("kbRequestModal").classList.add("open");
+  document.getElementById("kbRequestBtn").classList.add("active");
+  document.getElementById("kbreqTopic").focus();
+}
+
+function closeKBRequest() {
+  document.getElementById("kbRequestModal").classList.remove("open");
+  document.getElementById("kbRequestBtn").classList.remove("active");
+}
+
+function handleKBRequestOverlayClick(e) {
+  if (e.target === e.currentTarget) closeKBRequest();
+}
+
+async function submitKBRequest() {
+  const topic = document.getElementById("kbreqTopic").value.trim();
+  const comment = document.getElementById("kbreqComment").value.trim();
+  const status = document.getElementById("kbreqStatus");
+  const btn = document.getElementById("kbreqSubmitBtn");
+
+  if (!comment) {
+    status.textContent = "Please enter your comments before submitting.";
+    status.className = "error";
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = "Submitting…";
+  status.className = "";
+
+  try {
+    const res = await fetch("/kb-request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: topic, comment }),
+    });
+    if (!res.ok) throw new Error("Server error");
+    status.textContent = "Request submitted successfully. Thank you!";
+    status.className = "success";
+    setTimeout(closeKBRequest, 1800);
+  } catch (err) {
+    status.textContent = "Failed to submit. Please try again.";
+    status.className = "error";
+    btn.disabled = false;
+  }
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────
