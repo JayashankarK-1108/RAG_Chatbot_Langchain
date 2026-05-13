@@ -316,13 +316,15 @@ def submit_kb_request(body: KBRequestBody):
         ContentType="application/json",
     )
 
-    # Send email notification (non-blocking — failure won't break the submission)
+    # Send email notification
+    email_error = None
     try:
         _send_kb_request_email(entry)
     except Exception as e:
+        email_error = str(e)
         print(f"[KB Request] Email notification failed: {e}")
 
-    return {"status": "submitted", "id": entry["id"]}
+    return {"status": "submitted", "id": entry["id"], "email_error": email_error}
 
 
 @app.get("/sessions")
