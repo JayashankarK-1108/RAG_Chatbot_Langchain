@@ -1,5 +1,9 @@
 import uuid
 import os
+import re
+import json
+import pathlib
+from datetime import datetime, timezone
 import boto3
 from urllib.parse import urlparse
 from fastapi import FastAPI
@@ -22,6 +26,11 @@ vectorstore = get_vectorstore()
 rag_chain = build_rag_chain(get_session_memory)
 
 SCORE_THRESHOLD = 0.60
+OUT_OF_CONTEXT_THRESHOLD = 0.45
+
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+DOCS_DIR = _PROJECT_ROOT / "data" / "documents"
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
 
 
 def _s3_key_from_url(stored_url: str) -> str:
@@ -47,9 +56,51 @@ def _fresh_presigned_url(key: str) -> str:
     )
 
 
+def _inject_image_markers(text: str, num_images: int) -> str:
+    """
+    Post-processing fallback for PDF mode: if the LLM didn't place [IMAGE_N] markers
+    after each numbered step, inject them automatically.
+    Splits on double-newlines; any block that starts with a digit step (1. / 2) / etc.)
+    gets a marker appended after it, cycling through the available image count.
+    """
+    if num_images == 0 or "[IMAGE_" in text:
+        return text  # markers already present or no images — nothing to do
+
+    parts = re.split(r"(\n\n)", text)
+    out = []
+    img_idx = 1
+
+    for part in parts:
+        out.append(part)
+        if part.strip() and re.match(r"^\d+[.)]\s", part.strip()):
+            n = ((img_idx - 1) % num_images) + 1
+            out.append(f"\n[IMAGE_{n}]")
+            img_idx += 1
+
+    return "".join(out)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/library")
+def get_library():
+    """Return a list of available document titles in the knowledge base."""
+    if not DOCS_DIR.exists():
+        return {"documents": []}
+
+    docs = []
+    for f in sorted(DOCS_DIR.iterdir()):
+        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
+            # Strip all known extensions (handles double extensions like .pdf.pdf)
+            name = f.name
+            name = re.sub(r"(\.\w+)+$", "", name)
+            name = name.replace("_", " ").replace("-", " ").strip()
+            docs.append({"filename": f.name, "title": name})
+
+    return {"documents": docs}
 
 
 @app.get("/image-proxy")
@@ -68,33 +119,86 @@ class Query(BaseModel):
 def chat(query: Query):
     session_id = query.session_id or str(uuid.uuid4())
 
-    # Score-filtered retrieval — suppresses images for irrelevant queries like "hi"
-    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=8)
-    source_docs = [doc for doc, score in results if score >= SCORE_THRESHOLD]
+    # Retrieve a wide pool of candidates so long step-by-step docs aren't truncated
+    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=20)
 
-    # Fallback: if nothing clears the threshold, use top-3 results anyway
+    # Out-of-context guard: if the best match score is too low, the question is unrelated
+    if not results or results[0][1] < OUT_OF_CONTEXT_THRESHOLD:
+        return {
+            "session_id": session_id,
+            "answer": (
+                "I'm sorry, but your question appears to be **outside the scope** of our knowledge base. "
+                "Please check the **Library** (bottom-left) for available documents and ask a question related to those topics."
+            ),
+            "images": [],
+        }
+
+    # Identify the most relevant document from the top result
+    top_source = results[0][0].metadata.get("source", "") if results else None
+
+    # For the top source: include ALL its chunks (no threshold) so no step is skipped.
+    # For other sources: apply the score threshold to avoid unrelated noise.
+    top_source_all = [doc for doc, _ in results if doc.metadata.get("source") == top_source]
+    other_filtered = [
+        doc for doc, score in results
+        if doc.metadata.get("source") != top_source and score >= SCORE_THRESHOLD
+    ]
+    source_docs = top_source_all + other_filtered
+
+    # Fallback: if the top source itself had no hits (shouldn't happen), use raw top-3
     if not source_docs:
         source_docs = [doc for doc, _ in results[:3]]
 
-    context = "\n\n".join(doc.page_content for doc in source_docs)
+    top_source_docs = [doc for doc in source_docs if doc.metadata.get("source") == top_source]
+    other_docs = [doc for doc in source_docs if doc.metadata.get("source") != top_source]
 
-    # Use the source of the single highest-scoring chunk — most relevant document wins
-    top_source = results[0][0].metadata.get("source", "") if results else None
+    # Detect whether the top source was ingested with per-step image positioning (DOCX)
+    uses_positioned_images = any(
+        doc.metadata.get("image_order") == "positioned" for doc in top_source_docs
+    )
 
-    # Collect images only from the top source — prevents cross-doc image bleed
     seen_keys: list = []
-    for doc in source_docs:
-        if doc.metadata.get("source") != top_source:
-            continue
-        for stored_url in doc.metadata.get("image_urls", []):
-            key = _s3_key_from_url(stored_url)
-            if key and key not in seen_keys:
-                seen_keys.append(key)
 
-    # Build image reference list for the prompt (e.g. "[IMAGE_1]", "[IMAGE_2]")
-    image_refs = "\n".join(f"[IMAGE_{i+1}]" for i in range(len(seen_keys)))
-    if not image_refs:
-        image_refs = "No images available."
+    if uses_positioned_images:
+        # DOCX: embed [IMAGE_N] markers directly after each chunk that has an associated image.
+        # The LLM sees the correct position and simply preserves the markers.
+        context_parts = []
+        img_counter = 0
+        for doc in top_source_docs:
+            chunk_text = doc.page_content
+            chunk_image_urls = doc.metadata.get("image_urls", [])
+
+            # Collect markers for every image belonging to this step (may be 2+)
+            step_markers = []
+            for url in chunk_image_urls:
+                key = _s3_key_from_url(url)
+                if key and key not in seen_keys:
+                    seen_keys.append(key)
+                    img_counter += 1
+                    step_markers.append(f"[IMAGE_{img_counter}]")
+
+            if step_markers:
+                context_parts.append(chunk_text + "\n" + "\n".join(step_markers))
+            else:
+                context_parts.append(chunk_text)
+
+        for doc in other_docs:
+            context_parts.append(doc.page_content)
+
+        context = "\n\n".join(context_parts)
+        image_refs = "Images are embedded in the context above."
+    else:
+        # PDF / other: existing bulk approach — collect all images from top source
+        context = "\n\n".join(doc.page_content for doc in source_docs)
+        for doc in top_source_docs:
+            for stored_url in doc.metadata.get("image_urls", []):
+                key = _s3_key_from_url(stored_url)
+                if key and key not in seen_keys:
+                    seen_keys.append(key)
+
+        image_refs = "\n".join(f"[IMAGE_{i+1}]" for i in range(len(seen_keys)))
+        if not image_refs:
+            image_refs = "No images available."
 
     # Proxy URLs returned to the frontend — always fresh
     proxy_urls = [f"/image-proxy?key={key}" for key in seen_keys]
@@ -104,6 +208,10 @@ def chat(query: Query):
         config={"configurable": {"session_id": session_id}},
     )
 
+    # For PDF mode: if the LLM forgot to place markers, inject them after each numbered step
+    if not uses_positioned_images and seen_keys:
+        result = _inject_image_markers(result, len(seen_keys))
+
     set_session_title(session_id, query.question)
 
     return {
@@ -111,6 +219,113 @@ def chat(query: Query):
         "answer": result,
         "images": proxy_urls,
     }
+
+
+class KBRequestBody(BaseModel):
+    question: str = ""
+    comment: str
+
+
+KB_REQUEST_FROM_EMAIL = "visit4shankar@gmail.com"        # Verified SES sender
+KB_REQUEST_NOTIFY_EMAIL = "jayashankar.kaliyaperumal@cognizant.com"  # Recipient
+KB_REQUESTS_S3_KEY = "kb_requests/kb_requests.json"
+
+
+def _boto_client(service: str):
+    return boto3.client(
+        service,
+        region_name=os.getenv("AWS_REGION"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    )
+
+
+def _send_kb_request_email(entry: dict):
+    """Send a notification email via AWS SES when a KB Request is submitted."""
+    ses = _boto_client("ses")
+    topic = entry["question"] or "Not specified"
+    comment = entry["comment"]
+    timestamp = entry["timestamp"]
+
+    subject = f"[KB Request] New request: {topic[:60]}"
+    body_text = (
+        f"A new KB Request has been submitted.\n\n"
+        f"Topic / Question : {topic}\n"
+        f"Comments         : {comment}\n"
+        f"Submitted at     : {timestamp}\n"
+        f"Request ID       : {entry['id']}\n"
+    )
+    body_html = f"""
+    <html><body style="font-family:sans-serif;color:#111;max-width:600px;margin:auto">
+      <h2 style="color:#f97316">📬 New KB Request</h2>
+      <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:8px 12px;font-weight:600;width:180px;background:#f3f4f6">Topic / Question</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{topic}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Comments</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{comment}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Submitted At</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{timestamp}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Request ID</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{entry['id']}</td></tr>
+      </table>
+      <p style="margin-top:20px;font-size:12px;color:#6b7280">
+        This request has also been saved to S3: <code>kb_requests/kb_requests.json</code>
+      </p>
+    </body></html>
+    """
+
+    ses.send_email(
+        Source=f"KB Assistant <{KB_REQUEST_FROM_EMAIL}>",
+        Destination={"ToAddresses": [KB_REQUEST_NOTIFY_EMAIL]},
+        Message={
+            "Subject": {"Data": subject, "Charset": "UTF-8"},
+            "Body": {
+                "Text": {"Data": body_text, "Charset": "UTF-8"},
+                "Html": {"Data": body_html, "Charset": "UTF-8"},
+            },
+        },
+    )
+
+
+@app.post("/kb-request")
+def submit_kb_request(body: KBRequestBody):
+    entry = {
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "question": body.question,
+        "comment": body.comment,
+    }
+
+    s3 = _boto_client("s3")
+    bucket = os.getenv("S3_BUCKET_NAME")
+
+    # Read existing requests from S3 (if any)
+    existing = []
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=KB_REQUESTS_S3_KEY)
+        existing = json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        existing = []
+
+    existing.append(entry)
+
+    # Write updated list back to S3
+    s3.put_object(
+        Bucket=bucket,
+        Key=KB_REQUESTS_S3_KEY,
+        Body=json.dumps(existing, indent=2, ensure_ascii=False).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+    # Send email notification
+    email_error = None
+    try:
+        _send_kb_request_email(entry)
+    except Exception as e:
+        email_error = str(e)
+        print(f"[KB Request] Email notification failed: {e}")
+
+    return {"status": "submitted", "id": entry["id"], "email_error": email_error}
 
 
 @app.get("/sessions")

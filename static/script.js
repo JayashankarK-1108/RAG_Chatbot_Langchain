@@ -1,5 +1,6 @@
 let currentSessionId = null;
 let currentMessages = []; // tracks messages for the active session
+let lastQuestion = ""; // tracks last user question for KB Request pre-fill
 
 const STORAGE_KEY = "rag_sessions";
 
@@ -41,6 +42,7 @@ function storageDelete(sessionId) {
 document.addEventListener("DOMContentLoaded", () => {
   renderSessionListFromStorage();
   document.getElementById("newChatBtn").addEventListener("click", startNewChat);
+  document.getElementById("libraryBtn").addEventListener("click", openLibrary);
   document.getElementById("lightbox").addEventListener("click", (e) => {
     if (e.target === e.currentTarget || e.target.classList.contains("lightbox-close")) {
       closeLightbox();
@@ -87,6 +89,9 @@ function loadSession(sessionId) {
 
   clearMessages();
 
+  const title = session?.title || "New Chat";
+  document.getElementById("chatTitle").textContent = title;
+
   if (currentMessages.length === 0) {
     document.getElementById("welcomeMsg").style.display = "flex";
   } else {
@@ -110,6 +115,7 @@ function startNewChat() {
   currentSessionId = null;
   currentMessages = [];
   clearMessages();
+  document.getElementById("chatTitle").textContent = "New Chat";
   highlightActiveSession();
 }
 
@@ -124,6 +130,7 @@ async function sendMessage() {
   const input = document.getElementById("userInput");
   const question = input.value.trim();
   if (!question) return;
+  lastQuestion = question;
 
   document.getElementById("welcomeMsg").style.display = "none";
   input.value = "";
@@ -183,12 +190,17 @@ function appendMessage(role, content, images = []) {
   row.className = `message-row ${role}`;
 
   const isHuman = role === "human";
-  const avatarLabel = isHuman ? "U" : "AI";
   const avatarClass = isHuman ? "human-avatar" : "ai-avatar";
+  const avatarContent = isHuman
+    ? "U"
+    : `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+        <polygon points="50,4 96,28 96,72 50,96 4,72 4,28" fill="#f97316"/>
+        <polygon points="50,20 82,37 82,63 50,80 18,63 18,37" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="5"/>
+       </svg>`;
 
   row.innerHTML = `
     <div class="message-wrapper">
-      <div class="avatar ${avatarClass}">${avatarLabel}</div>
+      <div class="avatar ${avatarClass}">${avatarContent}</div>
       <div class="bubble">${formatContent(content, images)}</div>
     </div>
   `;
@@ -205,7 +217,12 @@ function appendTyping() {
   row.id = id;
   row.innerHTML = `
     <div class="message-wrapper">
-      <div class="avatar ai-avatar">AI</div>
+      <div class="avatar ai-avatar">
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+          <polygon points="50,4 96,28 96,72 50,96 4,72 4,28" fill="#f97316"/>
+          <polygon points="50,20 82,37 82,63 50,80 18,63 18,37" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="5"/>
+        </svg>
+      </div>
       <div class="bubble">
         <div class="typing-indicator"><span></span><span></span><span></span></div>
       </div>
@@ -225,15 +242,27 @@ function clearMessages() {
   container.innerHTML = `
     <div class="welcome" id="welcomeMsg">
       <div class="welcome-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="36" height="36">
+          <polygon points="50,4 96,28 96,72 50,96 4,72 4,28" fill="#f97316"/>
+          <polygon points="50,20 82,37 82,63 50,80 18,63 18,37" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="4"/>
         </svg>
       </div>
       <h2>How can I help you today?</h2>
-      <p>Ask anything about the knowledge base documents.</p>
+      <p>Ask me anything about the knowledge base. I'll find the relevant steps and screenshots for you.</p>
+      <div class="suggestions">
+        <button class="suggestion-chip" onclick="useSuggestion('How do I configure WLAN?')">How do I configure WLAN?</button>
+        <button class="suggestion-chip" onclick="useSuggestion('Walk me through the proxy process')">Walk me through the proxy process</button>
+        <button class="suggestion-chip" onclick="useSuggestion('Show me the pivot process steps')">Show me the pivot process steps</button>
+      </div>
     </div>
   `;
+}
+
+function useSuggestion(text) {
+  const input = document.getElementById("userInput");
+  input.value = text;
+  autoResize(input);
+  sendMessage();
 }
 
 function scrollToBottom() {
@@ -249,6 +278,113 @@ function setInputDisabled(disabled) {
 function autoResize(el) {
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, 180) + "px";
+}
+
+// ── Library ───────────────────────────────────────────────────────────
+async function openLibrary() {
+  const modal = document.getElementById("libraryModal");
+  const list = document.getElementById("libraryDocList");
+  modal.classList.add("open");
+  document.getElementById("libraryBtn").classList.add("active");
+
+  list.innerHTML = '<li class="library-loading">Loading documents…</li>';
+
+  try {
+    const res = await fetch("/library");
+    const data = await res.json();
+    const docs = data.documents || [];
+
+    if (!docs.length) {
+      list.innerHTML = '<li class="library-loading">No documents found.</li>';
+      return;
+    }
+
+    list.innerHTML = "";
+    docs.forEach((doc) => {
+      const li = document.createElement("li");
+      li.className = "library-doc-item";
+      li.innerHTML = `
+        <div class="library-doc-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="#f97316" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          </svg>
+        </div>
+        <span class="library-doc-name">${escapeHtml(doc.title)}</span>
+      `;
+      list.appendChild(li);
+    });
+  } catch {
+    list.innerHTML = '<li class="library-loading">Failed to load documents.</li>';
+  }
+}
+
+function closeLibrary() {
+  document.getElementById("libraryModal").classList.remove("open");
+  document.getElementById("libraryBtn").classList.remove("active");
+}
+
+function handleLibraryOverlayClick(e) {
+  if (e.target === e.currentTarget) closeLibrary();
+}
+
+// ── KB Request ────────────────────────────────────────────────────────
+function openKBRequest() {
+  document.getElementById("kbreqTopic").value = lastQuestion;
+  document.getElementById("kbreqComment").value = "";
+  document.getElementById("kbreqStatus").textContent = "";
+  document.getElementById("kbreqStatus").className = "";
+  document.getElementById("kbreqSubmitBtn").disabled = false;
+  document.getElementById("kbRequestModal").classList.add("open");
+  document.getElementById("kbRequestBtn").classList.add("active");
+  document.getElementById("kbreqTopic").focus();
+}
+
+function closeKBRequest() {
+  document.getElementById("kbRequestModal").classList.remove("open");
+  document.getElementById("kbRequestBtn").classList.remove("active");
+}
+
+function handleKBRequestOverlayClick(e) {
+  if (e.target === e.currentTarget) closeKBRequest();
+}
+
+async function submitKBRequest() {
+  const topic = document.getElementById("kbreqTopic").value.trim();
+  const comment = document.getElementById("kbreqComment").value.trim();
+  const status = document.getElementById("kbreqStatus");
+  const btn = document.getElementById("kbreqSubmitBtn");
+
+  if (!comment) {
+    status.textContent = "Please enter your comments before submitting.";
+    status.className = "error";
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = "Submitting…";
+  status.className = "";
+
+  try {
+    const res = await fetch("/kb-request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: topic, comment }),
+    });
+    if (!res.ok) throw new Error("Server error");
+    const result = await res.json();
+    if (result.email_error) {
+      console.error("[KB Request] Email failed:", result.email_error);
+    }
+    status.textContent = "Request submitted successfully. Thank you!";
+    status.className = "success";
+    setTimeout(closeKBRequest, 1800);
+  } catch (err) {
+    status.textContent = "Failed to submit. Please try again.";
+    status.className = "error";
+    btn.disabled = false;
+  }
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────
