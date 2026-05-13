@@ -226,16 +226,64 @@ class KBRequestBody(BaseModel):
     comment: str
 
 
-def _s3_client():
+KB_REQUEST_NOTIFY_EMAIL = "jayashankar.kaliyaperumal@cognizant.com"
+KB_REQUESTS_S3_KEY = "kb_requests/kb_requests.json"
+
+
+def _boto_client(service: str):
     return boto3.client(
-        "s3",
+        service,
         region_name=os.getenv("AWS_REGION"),
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     )
 
 
-KB_REQUESTS_S3_KEY = "kb_requests/kb_requests.json"
+def _send_kb_request_email(entry: dict):
+    """Send a notification email via AWS SES when a KB Request is submitted."""
+    ses = _boto_client("ses")
+    topic = entry["question"] or "Not specified"
+    comment = entry["comment"]
+    timestamp = entry["timestamp"]
+
+    subject = f"[KB Request] New request: {topic[:60]}"
+    body_text = (
+        f"A new KB Request has been submitted.\n\n"
+        f"Topic / Question : {topic}\n"
+        f"Comments         : {comment}\n"
+        f"Submitted at     : {timestamp}\n"
+        f"Request ID       : {entry['id']}\n"
+    )
+    body_html = f"""
+    <html><body style="font-family:sans-serif;color:#111;max-width:600px;margin:auto">
+      <h2 style="color:#f97316">📬 New KB Request</h2>
+      <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:8px 12px;font-weight:600;width:180px;background:#f3f4f6">Topic / Question</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{topic}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Comments</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{comment}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Submitted At</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{timestamp}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Request ID</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{entry['id']}</td></tr>
+      </table>
+      <p style="margin-top:20px;font-size:12px;color:#6b7280">
+        This request has also been saved to S3: <code>kb_requests/kb_requests.json</code>
+      </p>
+    </body></html>
+    """
+
+    ses.send_email(
+        Source=KB_REQUEST_NOTIFY_EMAIL,
+        Destination={"ToAddresses": [KB_REQUEST_NOTIFY_EMAIL]},
+        Message={
+            "Subject": {"Data": subject, "Charset": "UTF-8"},
+            "Body": {
+                "Text": {"Data": body_text, "Charset": "UTF-8"},
+                "Html": {"Data": body_html, "Charset": "UTF-8"},
+            },
+        },
+    )
 
 
 @app.post("/kb-request")
@@ -247,7 +295,7 @@ def submit_kb_request(body: KBRequestBody):
         "comment": body.comment,
     }
 
-    s3 = _s3_client()
+    s3 = _boto_client("s3")
     bucket = os.getenv("S3_BUCKET_NAME")
 
     # Read existing requests from S3 (if any)
@@ -255,8 +303,6 @@ def submit_kb_request(body: KBRequestBody):
     try:
         obj = s3.get_object(Bucket=bucket, Key=KB_REQUESTS_S3_KEY)
         existing = json.loads(obj["Body"].read().decode("utf-8"))
-    except s3.exceptions.NoSuchKey:
-        existing = []
     except Exception:
         existing = []
 
@@ -269,6 +315,12 @@ def submit_kb_request(body: KBRequestBody):
         Body=json.dumps(existing, indent=2, ensure_ascii=False).encode("utf-8"),
         ContentType="application/json",
     )
+
+    # Send email notification (non-blocking — failure won't break the submission)
+    try:
+        _send_kb_request_email(entry)
+    except Exception as e:
+        print(f"[KB Request] Email notification failed: {e}")
 
     return {"status": "submitted", "id": entry["id"]}
 
