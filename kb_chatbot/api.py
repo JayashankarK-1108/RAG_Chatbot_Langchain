@@ -274,7 +274,7 @@ def _send_kb_request_email(entry: dict):
     """
 
     ses.send_email(
-        Source=KB_REQUEST_NOTIFY_EMAIL,
+        Source=f"KB Assistant <{KB_REQUEST_NOTIFY_EMAIL}>",
         Destination={"ToAddresses": [KB_REQUEST_NOTIFY_EMAIL]},
         Message={
             "Subject": {"Data": subject, "Charset": "UTF-8"},
