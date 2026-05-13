@@ -227,6 +227,7 @@ class KBRequestBody(BaseModel):
 
 
 KB_REQUEST_NOTIFY_EMAIL = "jayashankar.kaliyaperumal@cognizant.com"
+KB_REQUEST_CC_EMAILS = ["visit4shankar@gmail.com"]
 KB_REQUESTS_S3_KEY = "kb_requests/kb_requests.json"
 
 
@@ -275,7 +276,7 @@ def _send_kb_request_email(entry: dict):
 
     ses.send_email(
         Source=f"KB Assistant <{KB_REQUEST_NOTIFY_EMAIL}>",
-        Destination={"ToAddresses": [KB_REQUEST_NOTIFY_EMAIL]},
+        Destination={"ToAddresses": [KB_REQUEST_NOTIFY_EMAIL], "CcAddresses": KB_REQUEST_CC_EMAILS},
         Message={
             "Subject": {"Data": subject, "Charset": "UTF-8"},
             "Body": {
