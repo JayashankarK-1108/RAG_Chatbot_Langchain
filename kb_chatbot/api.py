@@ -119,8 +119,48 @@ class Query(BaseModel):
 def chat(query: Query):
     session_id = query.session_id or str(uuid.uuid4())
 
+    # Condense follow-up questions into a standalone form using recent session history
+    try:
+        memory = get_session_memory(session_id)
+        # Build plain-text conversation history (defensive: support multiple memory APIs)
+        history_text = ""
+        msgs = getattr(memory, "messages", None)
+        if msgs is None:
+            get_msgs = getattr(memory, "get_messages", None)
+            msgs = get_msgs() if callable(get_msgs) else []
+        for m in msgs:
+            role = getattr(m, "type", None) or getattr(m, "role", "user")
+            content = getattr(m, "content", None) or getattr(m, "text", None) or str(m)
+            history_text += f"{role.capitalize()}: {content}\n"
+    except Exception:
+        history_text = ""
+
+    # Default search query is the raw question
+    search_query = query.question
+
+    # If the question looks like a follow-up (contains pronouns) and we have history, rewrite it
+    if re.search(r"\b(it|them|this|that|they|those|him|her|its)\b", query.question, re.I) and history_text.strip():
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.prompts import ChatPromptTemplate
+            from langchain_core.output_parsers import StrOutputParser
+
+            condense_prompt = ChatPromptTemplate.from_messages([
+                ("system", "Rewrite the follow-up question into a standalone question using the conversation context."),
+                ("human", "Conversation:\n{history}\n\nFollow-up question:\n{question}\n\nStandalone question:")
+            ])
+
+            condense_chain = condense_prompt | ChatOpenAI(model="gpt-4o", temperature=0.0) | StrOutputParser()
+            standalone = condense_chain.invoke({"history": history_text, "question": query.question})
+            standalone_question = standalone.strip() if isinstance(standalone, str) else str(standalone).strip()
+            if standalone_question:
+                search_query = standalone_question
+        except Exception:
+            # If condensation fails for any reason, fall back to the raw question
+            search_query = query.question
+
     # Retrieve a wide pool of candidates so long step-by-step docs aren't truncated
-    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=20)
+    results = vectorstore.similarity_search_with_relevance_scores(search_query, k=20)
 
     # Out-of-context guard: if the best match score is too low, the question is unrelated
     if not results or results[0][1] < OUT_OF_CONTEXT_THRESHOLD:
