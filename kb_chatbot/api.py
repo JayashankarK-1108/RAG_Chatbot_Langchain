@@ -391,4 +391,37 @@ def remove_session(session_id: str):
     return {"status": "deleted"}
 
 
+@app.post("/rescan")
+def rescan(trigger_ingest: bool = False):
+    """Rescan the local documents directory and optionally trigger ingestion in background.
+
+    - trigger_ingest (query param): if true, starts `kb_ingestion.main.main()` in a background thread.
+    """
+    if not DOCS_DIR.exists():
+        return {"documents": []}
+
+    docs = []
+    for f in sorted(DOCS_DIR.iterdir()):
+        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
+            name = f.name
+            name = re.sub(r"(\.\w+)+$", "", name)
+            name = name.replace("_", " ").replace("-", " ").strip()
+            docs.append({"filename": f.name, "title": name})
+
+    response = {"documents": docs, "scanned_at": datetime.now(timezone.utc).isoformat()}
+
+    if trigger_ingest:
+        try:
+            import threading
+            from kb_ingestion.main import main as ingestion_main
+
+            threading.Thread(target=ingestion_main, daemon=True).start()
+            response["ingest_started"] = True
+        except Exception as e:
+            response["ingest_started"] = False
+            response["ingest_error"] = str(e)
+
+    return response
+
+
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
