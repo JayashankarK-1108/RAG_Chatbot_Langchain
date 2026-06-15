@@ -119,8 +119,48 @@ class Query(BaseModel):
 def chat(query: Query):
     session_id = query.session_id or str(uuid.uuid4())
 
+    # Condense follow-up questions into a standalone form using recent session history
+    try:
+        memory = get_session_memory(session_id)
+        # Build plain-text conversation history (defensive: support multiple memory APIs)
+        history_text = ""
+        msgs = getattr(memory, "messages", None)
+        if msgs is None:
+            get_msgs = getattr(memory, "get_messages", None)
+            msgs = get_msgs() if callable(get_msgs) else []
+        for m in msgs:
+            role = getattr(m, "type", None) or getattr(m, "role", "user")
+            content = getattr(m, "content", None) or getattr(m, "text", None) or str(m)
+            history_text += f"{role.capitalize()}: {content}\n"
+    except Exception:
+        history_text = ""
+
+    # Default search query is the raw question
+    search_query = query.question
+
+    # If the question looks like a follow-up (contains pronouns) and we have history, rewrite it
+    if re.search(r"\b(it|them|this|that|they|those|him|her|its)\b", query.question, re.I) and history_text.strip():
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.prompts import ChatPromptTemplate
+            from langchain_core.output_parsers import StrOutputParser
+
+            condense_prompt = ChatPromptTemplate.from_messages([
+                ("system", "Rewrite the follow-up question into a standalone question using the conversation context."),
+                ("human", "Conversation:\n{history}\n\nFollow-up question:\n{question}\n\nStandalone question:")
+            ])
+
+            condense_chain = condense_prompt | ChatOpenAI(model="gpt-4o", temperature=0.0) | StrOutputParser()
+            standalone = condense_chain.invoke({"history": history_text, "question": query.question})
+            standalone_question = standalone.strip() if isinstance(standalone, str) else str(standalone).strip()
+            if standalone_question:
+                search_query = standalone_question
+        except Exception:
+            # If condensation fails for any reason, fall back to the raw question
+            search_query = query.question
+
     # Retrieve a wide pool of candidates so long step-by-step docs aren't truncated
-    results = vectorstore.similarity_search_with_relevance_scores(query.question, k=20)
+    results = vectorstore.similarity_search_with_relevance_scores(search_query, k=20)
 
     # Out-of-context guard: if the best match score is too low, the question is unrelated
     if not results or results[0][1] < OUT_OF_CONTEXT_THRESHOLD:
@@ -226,16 +266,65 @@ class KBRequestBody(BaseModel):
     comment: str
 
 
-def _s3_client():
+KB_REQUEST_FROM_EMAIL = "visit4shankar@gmail.com"        # Verified SES sender
+KB_REQUEST_NOTIFY_EMAIL = "jayashankar.kaliyaperumal@cognizant.com"  # Recipient
+KB_REQUESTS_S3_KEY = "kb_requests/kb_requests.json"
+
+
+def _boto_client(service: str):
     return boto3.client(
-        "s3",
+        service,
         region_name=os.getenv("AWS_REGION"),
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     )
 
 
-KB_REQUESTS_S3_KEY = "kb_requests/kb_requests.json"
+def _send_kb_request_email(entry: dict):
+    """Send a notification email via AWS SES when a KB Request is submitted."""
+    ses = _boto_client("ses")
+    topic = entry["question"] or "Not specified"
+    comment = entry["comment"]
+    timestamp = entry["timestamp"]
+
+    subject = f"[KB Request] New request: {topic[:60]}"
+    body_text = (
+        f"A new KB Request has been submitted.\n\n"
+        f"Topic / Question : {topic}\n"
+        f"Comments         : {comment}\n"
+        f"Submitted at     : {timestamp}\n"
+        f"Request ID       : {entry['id']}\n"
+    )
+    body_html = f"""
+    <html><body style="font-family:sans-serif;color:#111;max-width:600px;margin:auto">
+      <h2 style="color:#f97316">📬 New KB Request</h2>
+      <table style="border-collapse:collapse;width:100%">
+        <tr><td style="padding:8px 12px;font-weight:600;width:180px;background:#f3f4f6">Topic / Question</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{topic}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Comments</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{comment}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Submitted At</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{timestamp}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:600;background:#f3f4f6">Request ID</td>
+            <td style="padding:8px 12px;border-left:3px solid #f97316">{entry['id']}</td></tr>
+      </table>
+      <p style="margin-top:20px;font-size:12px;color:#6b7280">
+        This request has also been saved to S3: <code>kb_requests/kb_requests.json</code>
+      </p>
+    </body></html>
+    """
+
+    ses.send_email(
+        Source=f"KB Assistant <{KB_REQUEST_FROM_EMAIL}>",
+        Destination={"ToAddresses": [KB_REQUEST_NOTIFY_EMAIL]},
+        Message={
+            "Subject": {"Data": subject, "Charset": "UTF-8"},
+            "Body": {
+                "Text": {"Data": body_text, "Charset": "UTF-8"},
+                "Html": {"Data": body_html, "Charset": "UTF-8"},
+            },
+        },
+    )
 
 
 @app.post("/kb-request")
@@ -247,7 +336,7 @@ def submit_kb_request(body: KBRequestBody):
         "comment": body.comment,
     }
 
-    s3 = _s3_client()
+    s3 = _boto_client("s3")
     bucket = os.getenv("S3_BUCKET_NAME")
 
     # Read existing requests from S3 (if any)
@@ -255,8 +344,6 @@ def submit_kb_request(body: KBRequestBody):
     try:
         obj = s3.get_object(Bucket=bucket, Key=KB_REQUESTS_S3_KEY)
         existing = json.loads(obj["Body"].read().decode("utf-8"))
-    except s3.exceptions.NoSuchKey:
-        existing = []
     except Exception:
         existing = []
 
@@ -270,7 +357,15 @@ def submit_kb_request(body: KBRequestBody):
         ContentType="application/json",
     )
 
-    return {"status": "submitted", "id": entry["id"]}
+    # Send email notification
+    email_error = None
+    try:
+        _send_kb_request_email(entry)
+    except Exception as e:
+        email_error = str(e)
+        print(f"[KB Request] Email notification failed: {e}")
+
+    return {"status": "submitted", "id": entry["id"], "email_error": email_error}
 
 
 @app.get("/sessions")

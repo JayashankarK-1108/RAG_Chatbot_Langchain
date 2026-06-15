@@ -373,6 +373,10 @@ async function submitKBRequest() {
       body: JSON.stringify({ question: topic, comment }),
     });
     if (!res.ok) throw new Error("Server error");
+    const result = await res.json();
+    if (result.email_error) {
+      console.error("[KB Request] Email failed:", result.email_error);
+    }
     status.textContent = "Request submitted successfully. Thank you!";
     status.className = "success";
     setTimeout(closeKBRequest, 1800);
